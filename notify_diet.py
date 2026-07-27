@@ -66,18 +66,32 @@ def build_slack_message(menu_text, today):
     return f"*{date_str} 오늘의 식단 (동부식당 점심)*\n{items}"
 
 
-def send_to_slack(text, webhook_url, attempts=3, backoff_seconds=20):
+def _post_to_slack_once(text, webhook_url):
+    resp = requests.post(webhook_url, json={"text": text}, timeout=30)
+    resp.raise_for_status()
+
+
+SLACK_QUICK_ATTEMPTS = 3
+SLACK_QUICK_BACKOFF_SECONDS = 20
+SLACK_EXTENDED_ROUNDS = 2  # 1 initial quick round + 1 extended-wait round
+SLACK_EXTENDED_WAIT_SECONDS = 1800  # 30 min
+
+
+def send_to_slack(text, webhook_url):
     last_error = None
-    for attempt in range(1, attempts + 1):
-        try:
-            resp = requests.post(webhook_url, json={"text": text}, timeout=30)
-            resp.raise_for_status()
-            return
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            print(f"Slack 전송 시도 {attempt}/{attempts} 실패: {e}")
-            if attempt < attempts:
-                time.sleep(backoff_seconds)
+    for round_num in range(1, SLACK_EXTENDED_ROUNDS + 1):
+        for attempt in range(1, SLACK_QUICK_ATTEMPTS + 1):
+            try:
+                _post_to_slack_once(text, webhook_url)
+                return
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                print(f"Slack 전송 시도 {attempt}/{SLACK_QUICK_ATTEMPTS} (라운드 {round_num}) 실패: {e}")
+                if attempt < SLACK_QUICK_ATTEMPTS:
+                    time.sleep(SLACK_QUICK_BACKOFF_SECONDS)
+        if round_num < SLACK_EXTENDED_ROUNDS:
+            print(f"{SLACK_EXTENDED_WAIT_SECONDS}초 대기 후 재시도합니다")
+            time.sleep(SLACK_EXTENDED_WAIT_SECONDS)
     raise last_error
 
 
