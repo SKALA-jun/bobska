@@ -66,9 +66,19 @@ def build_slack_message(menu_text, today):
     return f"*{date_str} 오늘의 식단 (동부식당 점심)*\n{items}"
 
 
-def send_to_slack(text, webhook_url):
-    resp = requests.post(webhook_url, json={"text": text}, timeout=15)
-    resp.raise_for_status()
+def send_to_slack(text, webhook_url, attempts=3, backoff_seconds=20):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.post(webhook_url, json={"text": text}, timeout=30)
+            resp.raise_for_status()
+            return
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"Slack 전송 시도 {attempt}/{attempts} 실패: {e}")
+            if attempt < attempts:
+                time.sleep(backoff_seconds)
+    raise last_error
 
 
 MAX_ATTEMPTS = 4
