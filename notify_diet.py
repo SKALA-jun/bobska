@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -6,8 +7,16 @@ from datetime import datetime, timezone, timedelta
 import requests
 from bs4 import BeautifulSoup
 
-DIET_URL = "https://www.uc.ac.kr/www/CMS/DietMenuMgr/listByWeek.do"
-CAMPUS_PARAMS = {"mCode": "MN207", "searchDietCategory": "4"}  # 동부식당
+# 2026-08: 사이트 개편으로 옛 경로(listByWeek.do)가 404. 새 경로를 우선 시도하고,
+# 실패하면(네트워크 오류/404/테이블 구조 변경) 옛 경로로 폴백한다.
+DIET_URL = "https://www.uc.ac.kr/kr/CMS/DietMenuMgr/list.do"
+CAMPUS_PARAMS = {"mCode": "MN187", "searchDietCategory": "4"}  # 동부식당
+
+LEGACY_DIET_URL = "https://www.uc.ac.kr/www/CMS/DietMenuMgr/listByWeek.do"
+LEGACY_CAMPUS_PARAMS = {"mCode": "MN207", "searchDietCategory": "4"}  # 동부식당
+
+DIET_SOURCES = [(DIET_URL, CAMPUS_PARAMS), (LEGACY_DIET_URL, LEGACY_CAMPUS_PARAMS)]
+
 KST = timezone(timedelta(hours=9))
 
 
@@ -19,18 +28,49 @@ class DateNotListed(Exception):
     is treated as retryable rather than assumed to mean "no menu today"."""
 
 
-def fetch_today_menu():
-    today = datetime.now(KST).date()
-    resp = requests.get(DIET_URL, params=CAMPUS_PARAMS, timeout=15)
+def _fetch_table(url, params):
+    resp = requests.get(url, params=params, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
+    return soup.select_one("#cafeteria-menu table.tbl-type01") or soup.select_one("#cafeteria-menu table.tbl")
 
-    table = soup.select_one("#cafeteria-menu table.tbl-type01")
+
+def _extract_header_date(th):
+    """New site splits the date across .mon ("2026.08") and .date ("31") spans
+    instead of one full "2026-08-31" string, so reassemble it when needed."""
+    date_el = th.select_one(".date")
+    date_text = date_el.get_text(strip=True) if date_el else th.get_text(strip=True)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
+        return date_text
+    mon_el = th.select_one(".mon")
+    if mon_el:
+        year, month = mon_el.get_text(strip=True).split(".")
+        return f"{year}-{month}-{date_text.zfill(2)}"
+    return date_text
+
+
+def fetch_today_menu():
+    today = datetime.now(KST).date()
+
+    table = None
+    last_error = None
+    for url, params in DIET_SOURCES:
+        try:
+            table = _fetch_table(url, params)
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"{url} 요청 실패, 다음 URL 시도: {e}")
+            continue
+        if table is None:
+            last_error = RuntimeError(f"{url}: 식단표 테이블을 찾을 수 없습니다 (사이트 구조가 변경되었을 수 있습니다)")
+            print(f"{last_error}, 다음 URL 시도")
+            continue
+        break
     if table is None:
-        raise RuntimeError("식단표 테이블을 찾을 수 없습니다 (사이트 구조가 변경되었을 수 있습니다)")
+        raise last_error
 
     header_cells = table.select("thead th")[1:]  # skip "구분" column
-    dates = [th.select_one(".date").get_text(strip=True) for th in header_cells]
+    dates = [_extract_header_date(th) for th in header_cells]
 
     if str(today) not in dates:
         raise DateNotListed(f"{today}가 이번주 식단표({dates})에 없습니다")
@@ -40,7 +80,7 @@ def fetch_today_menu():
     lunch_row = None
     for row in table.select("tbody tr"):
         header = row.select_one("th")
-        if header and header.get_text(strip=True) == "점심":
+        if header and header.get_text(strip=True) in ("점심", "중식"):
             lunch_row = row
             break
     if lunch_row is None:
