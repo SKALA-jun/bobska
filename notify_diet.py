@@ -94,15 +94,20 @@ def fetch_today_menu():
     return menu_text, today
 
 
+FOOD_COURT_MARKER = "<푸드코트>"
+
+
 def build_slack_message(menu_text, today):
     """Returns None when today's row is genuinely empty/holiday (site has the
     date listed but no menu) - caller should skip sending in that case."""
     if not menu_text.strip() or "공휴일" in menu_text:
         return None
 
+    main_menu_text = menu_text.split(FOOD_COURT_MARKER)[0]
+
     day_kr = ["월", "화", "수", "목", "금", "토", "일"][today.weekday()]
     date_str = f"{today.strftime('%Y-%m-%d')} ({day_kr})"
-    items = "\n".join(f"- {line}" for line in menu_text.split("\n") if line.strip())
+    items = "\n".join(f"- {line}" for line in main_menu_text.split("\n") if line.strip())
     return f"*{date_str} 오늘의 식단 (동부식당 점심)*\n{items}"
 
 
